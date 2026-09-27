@@ -1,5 +1,14 @@
 package com.example.emp_regtrn.service;
 
+import com.example.emp_regtrn.dto.PincodeFinalResponse;
+import com.example.emp_regtrn.dto.PincodeResponse;
+import com.example.emp_regtrn.dto.PostOfficeResponse;
+import com.example.emp_regtrn.exception.PincodeApiException;
+import com.example.emp_regtrn.exception.PincodeNotFoundException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -8,96 +17,130 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
 
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Service;
-
-import com.example.emp_regtrn.dto.PincodeFinalResponse;
-import com.example.emp_regtrn.dto.PincodeResponse;
-import com.example.emp_regtrn.dto.PostOfficeResponse;
-import com.example.emp_regtrn.exception.PincodeApiException;
-import com.example.emp_regtrn.exception.PincodeNotFoundException;
-
-import tools.jackson.databind.ObjectMapper;
-
-
 @Service
 public class PincodeService {
 
-    // java.net.http.HttpClient uses a different SSL engine than the old
-    // HttpURLConnection-based RestTemplate factory, which can avoid TLS
-    // handshake resets caused by some antivirus/network TLS inspection.
     private final HttpClient httpClient = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(5))
+            .connectTimeout(Duration.ofSeconds(15))
+            .followRedirects(HttpClient.Redirect.NORMAL)
+            .version(HttpClient.Version.HTTP_1_1)
             .build();
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Value("${pincode.api.url}")
-    private String pincodeApiUrl; // e.g. http://www.postalpincode.in/api/pincode/
+    private String pincodeApiUrl;
 
     public PincodeFinalResponse getPincodeDetails(String pincode) {
 
+        // Validate pincode
         if (pincode == null || !pincode.matches("^\\d{6}$")) {
             throw new PincodeNotFoundException("Pincode not found");
         }
 
         String url = pincodeApiUrl + pincode;
-        System.out.println(url);
+
         String responseBody;
-      
 
         try {
+            // Build HTTP request
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(url))
-                    .timeout(Duration.ofSeconds(5))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("User-Agent", "Mozilla/5.0")
+                    .header("Accept", "application/json")
                     .GET()
                     .build();
-            System.out.println(request+"request");
 
+            // Call external API
             HttpResponse<String> httpResponse =
-                    httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            System.out.println(httpResponse+"httpResponse");
+                    httpClient.send(
+                            request,
+                            HttpResponse.BodyHandlers.ofString()
+                    );
 
+            // Check HTTP status
             if (httpResponse.statusCode() != 200) {
                 throw new PincodeApiException(
-                        "Unable to fetch pincode details, status: " + httpResponse.statusCode());
+                        "Unable to fetch pincode details, status: "
+                                + httpResponse.statusCode()
+                );
             }
 
             responseBody = httpResponse.body();
-            System.out.println(responseBody);
 
-        } catch (IOException | InterruptedException e) {
-            e.printStackTrace(); // remove once confirmed working
-            throw new PincodeApiException("Unable to fetch pincode details");
+        } catch (IOException e) {
+
+            throw new PincodeApiException(
+                    "Unable to connect to pincode API"
+            );
+
+        } catch (InterruptedException e) {
+
+            Thread.currentThread().interrupt();
+
+            throw new PincodeApiException(
+                    "Pincode API request was interrupted"
+            );
         }
 
+        // Parse response
         PincodeResponse response;
+
         try {
-            response = objectMapper.readValue(responseBody, PincodeResponse.class);
+
+            response = objectMapper.readValue(
+                    responseBody,
+                    PincodeResponse.class
+            );
+
         } catch (Exception e) {
-            e.printStackTrace(); // remove once confirmed working
-            throw new PincodeApiException("Unable to parse pincode details");
+
+            throw new PincodeApiException(
+                    "Unable to parse pincode API response"
+            );
         }
 
+        // Validate API response
         if (response == null
                 || !"Success".equalsIgnoreCase(response.getStatus())
                 || response.getPostOffice() == null
                 || response.getPostOffice().isEmpty()) {
 
-            throw new PincodeNotFoundException("Pincode not found");
+            throw new PincodeNotFoundException(
+                    "Pincode not found"
+            );
         }
 
-        List<PostOfficeResponse> offices = response.getPostOffice();
-        String city = offices.get(0).getDistrict().trim();
-        String state = offices.get(0).getState().trim();
-        String country = offices.get(0).getCountry().trim();
+        // Get post offices
+        List<PostOfficeResponse> offices =
+                response.getPostOffice();
 
+        // Get city/state/country from first post office
+        String city = offices.get(0).getDistrict() != null
+                ? offices.get(0).getDistrict().trim()
+                : null;
+
+        String state = offices.get(0).getState() != null
+                ? offices.get(0).getState().trim()
+                : null;
+
+        String country = offices.get(0).getCountry() != null
+                ? offices.get(0).getCountry().trim()
+                : null;
+
+        // Get all post office names
         List<String> postOfficeNames = offices.stream()
                 .map(PostOfficeResponse::getName)
                 .filter(name -> name != null && !name.isBlank())
                 .map(String::trim)
                 .toList();
 
-        return new PincodeFinalResponse(city, state, country, postOfficeNames);
+        return new PincodeFinalResponse(
+                city,
+                state,
+                country,
+                postOfficeNames
+        );
     }
 }
